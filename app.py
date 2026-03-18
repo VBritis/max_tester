@@ -31,13 +31,17 @@ for key, val in DEFAULTS.items():
 
 # ── OpenAI Client ───────────────────────────────────────────────────────────
 
-@st.cache_resource
-def get_client():
-    return openai.OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+api_key = st.sidebar.text_input("OpenAI API Key", type="password", placeholder="sk-proj-...")
+
+if not api_key:
+    st.info("Insira sua API Key da OpenAI na barra lateral para começar.")
+    st.stop()
+
+
 
 
 try:
-    client = get_client()
+    client = openai.OpenAI(api_key=api_key)
 except Exception:
     st.error("Configure a OPENAI_API_KEY em .streamlit/secrets.toml ou no dashboard do Streamlit Cloud.")
     st.stop()

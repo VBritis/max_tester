@@ -334,6 +334,8 @@ with tab_pipeline:
                 )
                 if st.button("✨ Ir para Prompt Refiner →", use_container_width=True, key="btn_go_refiner"):
                     st.session_state.refiner_analysis = llm_analyses
+                    st.session_state.refiner_analysis_input = llm_analyses
+                    st.toast("Análise copiada! Clique na aba ✨ Prompt Refiner para continuar.", icon="✨")
                     st.rerun()
 
 
@@ -464,6 +466,8 @@ with tab_validator:
                 )
                 if st.button("✨ Ir para Prompt Refiner →", use_container_width=True, key="btn_go_refiner_quick"):
                     st.session_state.refiner_analysis = llm_analyses_quick
+                    st.session_state.refiner_analysis_input = llm_analyses_quick
+                    st.toast("Análise copiada! Clique na aba ✨ Prompt Refiner para continuar.", icon="✨")
                     st.rerun()
 
 
@@ -487,10 +491,8 @@ with tab_refiner:
         placeholder="Cole aqui o prompt atual do sistema que você quer melhorar...",
     )
 
-    analysis_default = st.session_state.refiner_analysis or ""
     analysis_input = st.text_area(
         "Análise de Melhoria",
-        value=analysis_default,
         height=200,
         key="refiner_analysis_input",
         placeholder=(
@@ -499,7 +501,7 @@ with tab_refiner:
         ),
     )
 
-    if analysis_default:
+    if st.session_state.refiner_analysis:
         st.success("Análise preenchida automaticamente a partir da validação de erros do LLM.")
 
     if st.button("Refinar Prompt →", type="primary", use_container_width=True, key="btn_refine"):

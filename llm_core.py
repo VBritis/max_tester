@@ -472,6 +472,16 @@ def refine_prompt(client, old_prompt, analysis):
     result = call_llm(client, PromptRef, PROMPT_REFINER, text)
     return result.prompt, result.changes
 
-def padronizer():
-
-    pass
+def padronizer(payloads):
+    """Converte a saída dos testes de nodes para dicts planos (sem nodes)."""
+    result = []
+    for test in payloads.response:
+        payload_data = {
+            "name": test.expected_payload.name,
+            **{node.field: node.value for node in test.expected_payload.nodes},
+        }
+        result.append({
+            "user_input": test.user_input,
+            "expected_payload": payload_data,
+        })
+    return result

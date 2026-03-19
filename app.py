@@ -7,7 +7,6 @@ from llm_core import (
     extract_schema,
     generate_tests,
     validate_errors,
-    structure_raw_logs,
     refine_prompt,
 )
 

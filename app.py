@@ -8,6 +8,7 @@ from llm_core import (
     generate_tests,
     validate_errors,
     refine_prompt,
+    padronizer
 )
 
 st.set_page_config(page_title="Max Tester", page_icon="🧪", layout="wide")
@@ -156,7 +157,7 @@ with tab_pipeline:
             if st.button("Aprovar & Gerar Preview →", type="primary", use_container_width=True, key="btn_preview"):
                 with st.spinner("Gerando preview (5 exemplos)..."):
                     try:
-                        preview = generate_tests(client, schema, count=5)
+                        preview = generate_tests(client, schema, count=5, context = st.session_state.context)
                         st.session_state.preview_tests = preview
                         st.session_state.step = 3
                         st.rerun()
@@ -191,6 +192,7 @@ with tab_pipeline:
                             client,
                             st.session_state.extracted_schema,
                             count=n,
+                            context = st.session_state.context
                         )
                         st.session_state.final_tests = final
                         st.session_state.step = 4
@@ -214,8 +216,11 @@ with tab_pipeline:
                 **payload_data,
             })
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        final_response = padronizer(final)
 
-        json_str = final.model_dump_json(indent=2)
+        #colocar o padronizer aqui
+
+        json_str = final_response.model_dump_json(indent=2)
         st.download_button(
             "⬇ Download Testes (JSON)",
             data=json_str,

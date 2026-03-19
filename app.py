@@ -218,9 +218,7 @@ with tab_pipeline:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
         final_response = padronizer(final)
 
-        #colocar o padronizer aqui
-
-        json_str = final_response.model_dump_json(indent=2)
+        json_str = json.dumps(final_response, indent=2, ensure_ascii=False)
         st.download_button(
             "⬇ Download Testes (JSON)",
             data=json_str,

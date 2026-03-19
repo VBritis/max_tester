@@ -28,6 +28,7 @@ DEFAULTS = {
     "refiner_result": None,
     "refiner_changes": None,
     "refiner_analysis": None,
+    "refiner_sent": False,
 }
 
 for key, val in DEFAULTS.items():
@@ -296,6 +297,13 @@ with tab_pipeline:
     elif st.session_state.step == 5:
         st.header("5. Resultados da Validação")
 
+        # Banner persistente após envio para Prompt Refiner
+        if st.session_state.refiner_sent:
+            st.success(
+                "✅ Análise dos erros de LLM enviada para a aba **✨ Prompt Refiner**. "
+                "Clique na aba para continuar."
+            )
+
         results = st.session_state.validation_results
         total = len(results)
         test_faults = sum(1 for r in results if r["validation"].is_test_flawed)
@@ -322,15 +330,37 @@ with tab_pipeline:
                 st.markdown("**Actual Payload:**")
                 st.json(r["error"]["actual_payload"])
 
-        col1, col2 = st.columns(2)
+        # ── Ações ──
+        col1, col2, col3 = st.columns(3)
         with col1:
-            if st.button("🔄 Recomeçar", type="primary", use_container_width=True, key="btn_restart"):
+            if st.button("🔄 Recomeçar", use_container_width=True, key="btn_restart"):
                 for key, val in DEFAULTS.items():
                     st.session_state[key] = val
                 st.rerun()
+
         with col2:
+            if test_faults > 0:
+                test_analyses = "\n".join(
+                    f"- Input: {r['error']['user_input']}\n  Diagnóstico: {r['validation'].diagnosis}\n  Ação: {r['validation'].suggested_action}"
+                    for r in results if r["validation"].is_test_flawed
+                )
+                if st.button("🔧 Recomeçar com correções", use_container_width=True, key="btn_restart_ctx"):
+                    extra = (
+                        "\n\n[CORREÇÕES BASEADAS NA VALIDAÇÃO - ERROS DE TESTE]\n"
+                        "Os seguintes erros foram identificados nos testes gerados anteriormente. "
+                        "Use essas informações para evitar gerar testes com os mesmos problemas:\n"
+                        f"{test_analyses}"
+                    )
+                    st.session_state.context = st.session_state.context + extra
+                    st.session_state.step = 1
+                    st.session_state.extracted_schema = None
+                    st.session_state.preview_tests = None
+                    st.session_state.final_tests = None
+                    st.session_state.validation_results = None
+                    st.rerun()
+
+        with col3:
             if llm_faults > 0:
-                # Coleta as análises dos erros de LLM para alimentar o Prompt Refiner
                 llm_analyses = "\n\n".join(
                     f"- Input: {r['error']['user_input']}\n  Diagnóstico: {r['validation'].diagnosis}\n  Ação: {r['validation'].suggested_action}"
                     for r in results if r["validation"].is_llm_flawed
@@ -338,7 +368,7 @@ with tab_pipeline:
                 if st.button("✨ Ir para Prompt Refiner →", use_container_width=True, key="btn_go_refiner"):
                     st.session_state.refiner_analysis = llm_analyses
                     st.session_state.refiner_analysis_input = llm_analyses
-                    st.toast("Análise copiada! Clique na aba ✨ Prompt Refiner para continuar.", icon="✨")
+                    st.session_state.refiner_sent = True
                     st.rerun()
 
 
@@ -456,10 +486,18 @@ with tab_validator:
                 st.markdown("**Actual Payload:**")
                 st.json(r["error"]["actual_payload"])
 
+        # Banner persistente após envio para Prompt Refiner
+        if st.session_state.refiner_sent:
+            st.success(
+                "✅ Análise dos erros de LLM enviada para a aba **✨ Prompt Refiner**. "
+                "Clique na aba para continuar."
+            )
+
         col1, col2 = st.columns(2)
         with col1:
             if st.button("Limpar resultados", use_container_width=True, key="btn_clear_quick"):
                 st.session_state.quick_validation_results = None
+                st.session_state.refiner_sent = False
                 st.rerun()
         with col2:
             if llm_faults > 0:
@@ -470,7 +508,7 @@ with tab_validator:
                 if st.button("✨ Ir para Prompt Refiner →", use_container_width=True, key="btn_go_refiner_quick"):
                     st.session_state.refiner_analysis = llm_analyses_quick
                     st.session_state.refiner_analysis_input = llm_analyses_quick
-                    st.toast("Análise copiada! Clique na aba ✨ Prompt Refiner para continuar.", icon="✨")
+                    st.session_state.refiner_sent = True
                     st.rerun()
 
 
@@ -575,4 +613,5 @@ with tab_refiner:
             st.session_state.refiner_result = None
             st.session_state.refiner_changes = None
             st.session_state.refiner_analysis = None
+            st.session_state.refiner_sent = False
             st.rerun()

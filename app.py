@@ -7,6 +7,8 @@ from llm_core import (
     extract_schema,
     generate_tests,
     validate_errors,
+    structure_raw_logs,
+    refine_prompt,
 )
 
 st.set_page_config(page_title="Max Tester", page_icon="🧪", layout="wide")
@@ -23,6 +25,8 @@ DEFAULTS = {
     "final_tests": None,
     "validation_results": None,
     "quick_validation_results": None,
+    "refiner_result": None,
+    "refiner_analysis": None,
 }
 
 for key, val in DEFAULTS.items():
@@ -223,21 +227,41 @@ with tab_pipeline:
         st.divider()
         st.subheader("Cole os logs de erro")
         st.caption(
-            "Rode os testes no seu sistema e cole aqui **somente os erros**. "
-            "Formato: JSON array com objetos contendo `user_input`, `expected_payload` e `actual_payload`."
+            "Rode os testes no seu sistema e cole aqui **somente os erros**."
         )
 
-        error_logs = st.text_area(
-            "Error Logs (JSON)",
-            height=250,
-            key="pipeline_error_logs",
-            placeholder=json.dumps([
+        log_format = st.radio(
+            "Formato dos logs",
+            ["JSON", "CSV", "Logs Brutos"],
+            horizontal=True,
+            key="pipeline_log_format",
+        )
+
+        placeholders = {
+            "JSON": json.dumps([
                 {
                     "user_input": "Faz um pix de 100 pro João",
                     "expected_payload": {"name": "payment_gateway", "amount": 100},
                     "actual_payload": {"name": "transactions", "amount": 100},
                 }
             ], indent=2, ensure_ascii=False),
+            "CSV": (
+                "user_input,expected_payload,actual_payload\n"
+                '"Faz um pix de 100 pro João","{""name"":""payment_gateway"",""amount"":100}","{""name"":""transactions"",""amount"":100}"'
+            ),
+            "Logs Brutos": (
+                '[2024-05-20 10:15:32] EVENT: execution_trace\n'
+                'USER_PROMPT: "Faz um pix de 100 pro João"\n'
+                'EXPECTED_BEHAVIOR: Call tool "payment_gateway" with amount=100\n'
+                'MODEL_EXECUTION: Called "transactions" with amount=100'
+            ),
+        }
+
+        error_logs = st.text_area(
+            "Error Logs",
+            height=250,
+            key="pipeline_error_logs",
+            placeholder=placeholders[log_format],
         )
 
         col1, col2 = st.columns(2)
@@ -250,9 +274,12 @@ with tab_pipeline:
                 if not error_logs.strip():
                     st.warning("Cole os logs de erro antes de validar.")
                 else:
-                    with st.spinner("Validando erros..."):
+                    fmt_map = {"JSON": "json", "CSV": "csv", "Logs Brutos": "raw"}
+                    fmt = fmt_map[log_format]
+                    spinner_msg = "Estruturando logs brutos e validando..." if fmt == "raw" else "Validando erros..."
+                    with st.spinner(spinner_msg):
                         try:
-                            results = validate_errors(client, error_logs)
+                            results = validate_errors(client, error_logs, fmt=fmt)
                             st.session_state.validation_results = results
                             st.session_state.step = 5
                             st.rerun()
@@ -292,10 +319,22 @@ with tab_pipeline:
                 st.markdown("**Actual Payload:**")
                 st.json(r["error"]["actual_payload"])
 
-        if st.button("🔄 Recomeçar", type="primary", use_container_width=True, key="btn_restart"):
-            for key, val in DEFAULTS.items():
-                st.session_state[key] = val
-            st.rerun()
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Recomeçar", type="primary", use_container_width=True, key="btn_restart"):
+                for key, val in DEFAULTS.items():
+                    st.session_state[key] = val
+                st.rerun()
+        with col2:
+            if llm_faults > 0:
+                # Coleta as análises dos erros de LLM para alimentar o Prompt Refiner
+                llm_analyses = "\n\n".join(
+                    f"- Input: {r['error']['user_input']}\n  Diagnóstico: {r['validation'].diagnosis}\n  Ação: {r['validation'].suggested_action}"
+                    for r in results if r["validation"].is_llm_flawed
+                )
+                if st.button("✨ Ir para Prompt Refiner →", use_container_width=True, key="btn_go_refiner"):
+                    st.session_state.refiner_analysis = llm_analyses
+                    st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -310,11 +349,15 @@ with tab_validator:
 
     st.divider()
 
-    error_logs_quick = st.text_area(
-        "Error Logs (JSON)",
-        height=300,
-        key="quick_error_logs",
-        placeholder=json.dumps([
+    quick_log_format = st.radio(
+        "Formato dos logs",
+        ["JSON", "CSV", "Logs Brutos"],
+        horizontal=True,
+        key="quick_log_format",
+    )
+
+    quick_placeholders = {
+        "JSON": json.dumps([
             {
                 "user_input": "Faz um pix de 100 pro João",
                 "expected_payload": {"name": "payment_gateway", "amount": 100.00, "receiver": "João"},
@@ -326,22 +369,53 @@ with tab_validator:
                 "actual_payload": {"name": "transactions", "resource_type": "view_invoice", "date": None},
             },
         ], indent=2, ensure_ascii=False),
+        "CSV": (
+            "user_input,expected_payload,actual_payload\n"
+            '"Faz um pix de 100 pro João","{""name"":""payment_gateway"",""amount"":100}","{""name"":""transactions"",""amount"":100}"'
+        ),
+        "Logs Brutos": (
+            '[2024-05-20 10:15:32] EVENT: execution_trace\n'
+            'USER_PROMPT: "Faz um pix de 100 pro João"\n'
+            'EXPECTED_BEHAVIOR: Call tool "payment_gateway" with amount=100\n'
+            'MODEL_EXECUTION: Called "transactions" with amount=100'
+        ),
+    }
+
+    error_logs_quick = st.text_area(
+        "Error Logs",
+        height=300,
+        key="quick_error_logs",
+        placeholder=quick_placeholders[quick_log_format],
     )
 
-    st.info(
-        "**Formato esperado:** JSON array onde cada objeto tem:\n"
-        "- `user_input` — o que o usuário mandou\n"
-        "- `expected_payload` — o que deveria ter saído\n"
-        "- `actual_payload` — o que o LLM realmente retornou"
-    )
+    format_hints = {
+        "JSON": (
+            "**Formato esperado:** JSON array onde cada objeto tem:\n"
+            "- `user_input` — o que o usuário mandou\n"
+            "- `expected_payload` — o que deveria ter saído\n"
+            "- `actual_payload` — o que o LLM realmente retornou"
+        ),
+        "CSV": (
+            "**Formato esperado:** CSV com colunas `user_input`, `expected_payload`, `actual_payload`.\n"
+            "Os payloads devem ser JSON válido dentro das células."
+        ),
+        "Logs Brutos": (
+            "**Cole os logs brutos** de execução do seu sistema. "
+            "Uma LLM irá analisar e estruturar automaticamente antes da validação."
+        ),
+    }
+    st.info(format_hints[quick_log_format])
 
     if st.button("Validar →", type="primary", use_container_width=True, key="btn_quick_validate"):
         if not error_logs_quick.strip():
             st.warning("Cole os logs de erro antes de validar.")
         else:
-            with st.spinner("Analisando erros..."):
+            fmt_map = {"JSON": "json", "CSV": "csv", "Logs Brutos": "raw"}
+            fmt = fmt_map[quick_log_format]
+            spinner_msg = "Estruturando logs brutos e validando..." if fmt == "raw" else "Analisando erros..."
+            with st.spinner(spinner_msg):
                 try:
-                    results = validate_errors(client, error_logs_quick)
+                    results = validate_errors(client, error_logs_quick, fmt=fmt)
                     st.session_state.quick_validation_results = results
                 except ValueError as e:
                     st.error(str(e))
@@ -377,9 +451,20 @@ with tab_validator:
                 st.markdown("**Actual Payload:**")
                 st.json(r["error"]["actual_payload"])
 
-        if st.button("Limpar resultados", use_container_width=True, key="btn_clear_quick"):
-            st.session_state.quick_validation_results = None
-            st.rerun()
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Limpar resultados", use_container_width=True, key="btn_clear_quick"):
+                st.session_state.quick_validation_results = None
+                st.rerun()
+        with col2:
+            if llm_faults > 0:
+                llm_analyses_quick = "\n\n".join(
+                    f"- Input: {r['error']['user_input']}\n  Diagnóstico: {r['validation'].diagnosis}\n  Ação: {r['validation'].suggested_action}"
+                    for r in results if r["validation"].is_llm_flawed
+                )
+                if st.button("✨ Ir para Prompt Refiner →", use_container_width=True, key="btn_go_refiner_quick"):
+                    st.session_state.refiner_analysis = llm_analyses_quick
+                    st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -387,63 +472,63 @@ with tab_validator:
 # ═══════════════════════════════════════════════════════════════════════════
 
 with tab_refiner:
-
-    # Hero section
-    st.markdown(
-        """
-        <div style="text-align: center; padding: 3rem 1rem;">
-            <h1 style="font-size: 3rem; margin-bottom: 0.5rem;">✨ Prompt Refiner</h1>
-            <p style="font-size: 1.2rem; color: #888; max-width: 600px; margin: 0 auto;">
-                Receba sugestões inteligentes para melhorar o prompt do seu sistema
-                com base nos erros detectados pelo Validator.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    st.header("✨ Prompt Refiner")
+    st.caption(
+        "Receba sugestões inteligentes para melhorar o prompt do seu sistema "
+        "com base nos erros detectados pelo Validator."
     )
 
     st.divider()
 
-    # Feature cards
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        st.markdown(
-            """
-            #### 🎯 Análise de Falhas
-            Identifica padrões nos erros do LLM e mapeia
-            quais regras estão faltando no prompt.
-            """
-        )
-
-    with col2:
-        st.markdown(
-            """
-            #### 🔧 Sugestões de Rewrite
-            Gera trechos de prompt otimizados que você pode
-            copiar e testar diretamente.
-            """
-        )
-
-    with col3:
-        st.markdown(
-            """
-            #### 📊 Before / After
-            Compara o comportamento do LLM antes e depois
-            das mudanças sugeridas.
-            """
-        )
-
-    st.divider()
-
-    st.markdown(
-        """
-        <div style="text-align: center; padding: 2rem;
-                    border: 2px dashed #444; border-radius: 12px; margin: 1rem 0;">
-            <p style="font-size: 1.1rem; color: #666;">
-                🚧 Em desenvolvimento — em breve disponível.
-            </p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    old_prompt = st.text_area(
+        "Prompt Atual do seu sistema",
+        height=200,
+        key="refiner_old_prompt",
+        placeholder="Cole aqui o prompt atual do sistema que você quer melhorar...",
     )
+
+    analysis_default = st.session_state.refiner_analysis or ""
+    analysis_input = st.text_area(
+        "Análise de Melhoria",
+        value=analysis_default,
+        height=200,
+        key="refiner_analysis_input",
+        placeholder=(
+            "Cole aqui o feedback/análise dos erros encontrados, ou use o botão "
+            "'Ir para Prompt Refiner' na aba de validação para preencher automaticamente."
+        ),
+    )
+
+    if analysis_default:
+        st.success("Análise preenchida automaticamente a partir da validação de erros do LLM.")
+
+    if st.button("Refinar Prompt →", type="primary", use_container_width=True, key="btn_refine"):
+        if not old_prompt.strip():
+            st.warning("Cole o prompt atual antes de refinar.")
+        elif not analysis_input.strip():
+            st.warning("Cole a análise de melhoria antes de refinar.")
+        else:
+            with st.spinner("Refinando prompt..."):
+                try:
+                    refined = refine_prompt(client, old_prompt, analysis_input)
+                    st.session_state.refiner_result = refined
+                except Exception as e:
+                    st.error(f"Erro ao refinar prompt: {e}")
+
+    if st.session_state.refiner_result:
+        st.divider()
+        st.subheader("Prompt Refinado")
+        st.code(st.session_state.refiner_result, language="markdown")
+
+        st.download_button(
+            "⬇ Download Prompt Refinado",
+            data=st.session_state.refiner_result,
+            file_name="refined_prompt.md",
+            mime="text/markdown",
+            use_container_width=True,
+        )
+
+        if st.button("Limpar resultado", use_container_width=True, key="btn_clear_refiner"):
+            st.session_state.refiner_result = None
+            st.session_state.refiner_analysis = None
+            st.rerun()

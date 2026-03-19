@@ -44,12 +44,25 @@ class ResponseFormat(BaseModel):
 
 # ── Schema do Validador ─────────────────────────────────────────────────────
 
+class LogSchema(BaseModel):
+    user_input: str = Field(..., description="Nome do agent/tool associado a esse payload.")
+    expected_payload: ResponsePayload = Field(..., description="Payload ESPERADO associado ao input do usuário")
+    actual_payload: ResponsePayload = Field(..., description="Payload RECEBIDO associado ao input do usuário")
+
+class LogResponse(BaseModel):
+    logs: List[LogSchema] = Field(..., description="Dados dos logs análisados e estruturados")
+
 class ValidationResult(BaseModel):
     is_test_flawed: bool = Field(..., description="True se o dado de teste gerado for injusto, impossível ou contraditório. False se o teste for válido.")
     is_llm_flawed: bool = Field(..., description="True se o teste era válido, mas o LLM do sistema principal errou a execução. False se a culpa for do teste.")
     diagnosis: str = Field(..., description="Explicação técnica curta do motivo da falha e quem foi o culpado.")
     suggested_action: str = Field(..., description="Se a culpa for do teste, sugira como corrigir o teste. Se for do LLM, indique qual regra faltou no prompt principal.")
 
+
+# ── Schema do Refiner─────────────────────────────────────────────────────
+
+class PromptRef(BaseModel):
+    prompt: str = Field(..., description="Novo prompt refinado e melhorado")
 
 # ── Prompts ─────────────────────────────────────────────────────────────────
 
@@ -164,6 +177,92 @@ Para cada nó (campo) dentro do payload que você gerar:
 Identifique a estrutura fornecida no prompt do usuário e gere os dados de teste seguindo estas instruções milimetricamente.
 """
 
+
+
+PROMPT_LOGS =  """
+## Missão e Identificação
+Você é o Max Tester, um Arquiteto de Dados especialista em análise de logs de LLMs e engenharia de dados.
+Seu objetivo é analisar blocos de logs de treinamento ou de execução brutos/não estruturados e extrair as informações cruciais, convertendo-as em um **formato estruturado exato** que permita a auditoria das chamadas de ferramentas (tools/agents).
+
+## Guia de raciocínio
+Para cada entrada de log não estruturada fornecida pelo usuário, você deve ler criticamente o texto e mapear o conteúdo seguindo estas regras estritas:
+
+1. **Identificação da Interação:** Isole a frase exata que engatilhou a ação. Este será o seu `user_input`.
+2. **Mapeamento do Payload Esperado (`expected_payload`):** Baseado no log, identifique qual era o nome da tool/agent que *deveria* ter sido chamada e quais eram as chaves e valores corretos. 
+   - Extraia o `name` da tool.
+   - Para cada parâmetro esperado, crie um nó contendo o `field` (nome da chave) e o `value` (valor da chave).
+3. **Mapeamento do Payload Recebido (`actual_payload`):** Identifique o que o modelo *realmente* gerou ou tentou executar.
+   - Extraia o `name` da tool que foi chamada na realidade.
+   - Para cada parâmetro gerado, crie um nó contendo o `field` e o `value`.
+4. **Fidelidade aos Dados:** Seja rigoroso e literal. Se um log mostrar que o modelo alucinou um campo ou omitiu uma informação, isso deve ser fielmente refletido no `actual_payload`. Se um valor for nulo ou ausente, documente conforme o log indicar.
+
+A sua saída deve ser estritamente um JSON válido que respeite o seguinte schema (inspirado em Pydantic):
+- O objeto raiz deve conter uma lista `logs`.
+- Cada log deve ter `user_input`, `expected_payload` e `actual_payload`.
+- Os payloads devem ter `name` (string) e `nodes` (lista de objetos com `field` e `value`).
+
+## Exemplos (Few-Shots)
+
+### Exemplo 1: Analisando falha de extração de parâmetro
+**Input do Usuário (Log bruto fornecido):**
+```text
+[2024-05-20 10:15:32] EVENT: execution_trace
+USER_PROMPT: "Agenda uma reunião com o time de marketing para amanhã às 14h sobre a nova campanha."
+EXPECTED_BEHAVIOR: Call agent 'calendar_manager' with arguments: action="create_event", title="Reunião com Marketing - Nova campanha", date="2024-05-21", time="14:00".
+MODEL_EXECUTION: The LLM routed to 'calendar_manager' but provided the following raw JSON: {"action": "create_event", "title": "Reunião com Marketing", "date": "amanhã", "time": "14:00"}. Validation failed because 'date' was not in ISO format.
+```
+**Output esperado da LLM (Log bruto estruturado):**
+{
+  "logs": [
+    {
+      "user_input": "Agenda uma reunião com o time de marketing para amanhã às 14h sobre a nova campanha.",
+      "expected_payload": {
+        "name": "calendar_manager",
+        "nodes": [
+          {
+            "field": "action",
+            "value": "create_event"
+          },
+          {
+            "field": "title",
+            "value": "Reunião com Marketing - Nova campanha"
+          },
+          {
+            "field": "date",
+            "value": "2024-05-21"
+          },
+          {
+            "field": "time",
+            "value": "14:00"
+          }
+        ]
+      },
+      "actual_payload": {
+        "name": "calendar_manager",
+        "nodes": [
+          {
+            "field": "action",
+            "value": "create_event"
+          },
+          {
+            "field": "title",
+            "value": "Reunião com Marketing"
+          },
+          {
+            "field": "date",
+            "value": "amanhã"
+          },
+          {
+            "field": "time",
+            "value": "14:00"
+          }
+        ]
+      }
+    }
+  ]
+}
+
+"""
 PROMPT_VALIDATOR = """
 ## Missão e Identidade
 Você é o Validator, um Engenheiro de Confiabilidade (SRE) e Juiz de Qualidade de Dados.
@@ -189,6 +288,31 @@ Você deve analisar a discrepância entre o esperado e o atual e declarar o culp
 Seja analítico e direto no seu diagnóstico. Sua decisão definirá se o sistema vai descartar o teste ou se vai enviar o erro para o Prompt Refiner melhorar o sistema.
 """
 
+
+
+
+PROMPT_REFINER = """
+
+## Missão e Identificação
+Você é um Engenheiro de Prompts Sênior e Especialista em Otimização de LLMs. Sua missão é evoluir, refinar e blindar um prompt existente com base nas críticas, falhas e direcionamentos apontados por uma análise prévia.
+
+## Entradas Fornecidas
+Você receberá dois textos:
+1. **[PROMPT ANTIGO]:** A versão atual do prompt que está apresentando falhas ou precisa de aprimoramento.
+2. **[ANÁLISE DE MELHORIA]:** O feedback detalhado de outra IA, indicando exatamente o que está dando errado, o que está ambíguo e o que precisa ser ajustado.
+
+## Guia de Execução (Regras Estritas)
+0. **Mudnaças:** Somente altere aquilo cuja [ANÁLISE DE MELHORIA] por IA recomendou, o resto mantenha intacto, não mexa em nada!
+1. **Preservação da Essência:** Mantenha a persona original (ex: Max Tester), o objetivo central e as exigências de formato (ex: schemas Pydantic, saída em JSON). Não mude o núcleo da tarefa, apenas a forma como ela é instruída.
+2. **Integração do Feedback:** Resolva TODOS os pontos levantados na [ANÁLISE DE MELHORIA]. Se o feedback diz que o modelo está alucinando variáveis, crie uma restrição explícita contra isso no novo prompt.
+3. **Clareza e Estrutura:** Reescreva trechos confusos. Use formatação em Markdown (cabeçalhos, listas, negrito) para criar uma hierarquia visual clara de instruções. Prompts bons são fáceis de escanear.
+4. **Atualização de Exemplos (Few-Shots):** Se o feedback apontar que os exemplos antigos não cobrem os casos de erro, ajuste os exemplos (few-shots) no corpo do novo prompt para refletir as novas regras.
+5. **Saída Direta:** Seu retorno deve ser EXCLUSIVAMENTE o novo prompt refinado. Não inclua saudações, explicações sobre o que você mudou ou fechamentos. Entregue apenas o artefato pronto para uso.
+
+---
+
+
+"""
 
 # ── Funções LLM ─────────────────────────────────────────────────────────────
 
@@ -238,9 +362,12 @@ Gere {count} casos de teste com base nessa estrutura.
     return call_llm(client, ResponseFormat, PROMPT_TESTER_2, text)
 
 
-def validate_errors(client, error_logs_text):
+def validate_errors(client, error_logs_text, fmt="json"):
     """LLM 3: Valida cada erro e determina se a culpa é do teste ou do LLM."""
-    errors = parse_error_logs(error_logs_text)
+    if fmt == "raw":
+        errors = structure_raw_logs(client, error_logs_text)
+    else:
+        errors = parse_error_logs(error_logs_text, fmt=fmt)
     results = []
 
     for error in errors:
@@ -258,8 +385,52 @@ def validate_errors(client, error_logs_text):
     return results
 
 
-def parse_error_logs(raw_text):
-    """Parseia os logs de erro colados pelo usuário (formato JSON array)."""
+def structure_raw_logs(client, raw_text):
+    """Usa LLM para estruturar logs brutos em formato padronizado."""
+    result = call_llm(client, LogResponse, PROMPT_LOGS, raw_text)
+    # Converte LogResponse para lista de dicts no formato esperado pelo validador
+    parsed = []
+    for log in result.logs:
+        parsed.append({
+            "user_input": log.user_input,
+            "expected_payload": {
+                "name": log.expected_payload.name,
+                **{node.field: node.value for node in log.expected_payload.nodes},
+            },
+            "actual_payload": {
+                "name": log.actual_payload.name,
+                **{node.field: node.value for node in log.actual_payload.nodes},
+            },
+        })
+    return parsed
+
+
+def parse_csv_logs(raw_text):
+    """Parseia logs de erro em formato CSV."""
+    import csv
+    import io
+
+    reader = csv.DictReader(io.StringIO(raw_text))
+    parsed = []
+    for row in reader:
+        if not all(k in row for k in ("user_input", "expected_payload", "actual_payload")):
+            raise ValueError(
+                "O CSV deve ter as colunas: 'user_input', 'expected_payload', 'actual_payload'."
+            )
+        parsed.append({
+            "user_input": row["user_input"],
+            "expected_payload": json.loads(row["expected_payload"]),
+            "actual_payload": json.loads(row["actual_payload"]),
+        })
+    return parsed
+
+
+def parse_error_logs(raw_text, fmt="json"):
+    """Parseia os logs de erro colados pelo usuário."""
+    if fmt == "csv":
+        return parse_csv_logs(raw_text)
+
+    # JSON
     try:
         data = json.loads(raw_text)
     except json.JSONDecodeError:
@@ -280,3 +451,13 @@ def parse_error_logs(raw_text):
         parsed.append(item)
 
     return parsed
+
+
+def refine_prompt(client, old_prompt, analysis):
+    """Usa LLM para refinar um prompt com base na análise de erros."""
+    text = (
+        f"[PROMPT ANTIGO]\n{old_prompt}\n\n"
+        f"[ANÁLISE DE MELHORIA]\n{analysis}"
+    )
+    result = call_llm(client, PromptRef, PROMPT_REFINER, text)
+    return result.prompt

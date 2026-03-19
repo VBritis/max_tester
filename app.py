@@ -25,6 +25,7 @@ DEFAULTS = {
     "validation_results": None,
     "quick_validation_results": None,
     "refiner_result": None,
+    "refiner_changes": None,
     "refiner_analysis": None,
 }
 
@@ -84,7 +85,7 @@ with tab_pipeline:
             "Contexto / Direcionamento",
             value=st.session_state.context,
             height=120,
-            placeholder="Descreva o que seu LLM faz, o domínio, instruções específicas...",
+            placeholder="Descreva o que seu LLM faz, o domínio, instruções específicas, formatação que deseja dos dados (gírias, erros de digitação, etc)...",
         )
 
         st.session_state.examples = st.text_area(
@@ -509,25 +510,64 @@ with tab_refiner:
         else:
             with st.spinner("Refinando prompt..."):
                 try:
-                    refined = refine_prompt(client, old_prompt, analysis_input)
+                    refined, changes = refine_prompt(client, old_prompt, analysis_input)
                     st.session_state.refiner_result = refined
+                    st.session_state.refiner_changes = changes
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Erro ao refinar prompt: {e}")
 
     if st.session_state.refiner_result:
         st.divider()
-        st.subheader("Prompt Refinado")
-        st.code(st.session_state.refiner_result, language="markdown")
 
-        st.download_button(
-            "⬇ Download Prompt Refinado",
-            data=st.session_state.refiner_result,
-            file_name="refined_prompt.md",
-            mime="text/markdown",
-            use_container_width=True,
+        # ── Resumo das mudanças (destaque principal) ──
+        st.subheader("📋 Resumo das Mudanças")
+        st.info(st.session_state.refiner_changes)
+
+        # ── Prompt refinado (colapsado por padrão) ──
+        with st.expander("Ver Prompt Refinado completo", expanded=False):
+            st.code(st.session_state.refiner_result, language="markdown")
+
+            st.download_button(
+                "⬇ Download Prompt Refinado",
+                data=st.session_state.refiner_result,
+                file_name="refined_prompt.md",
+                mime="text/markdown",
+                use_container_width=True,
+            )
+
+        # ── Input de contextualização extra para re-refinar ──
+        st.divider()
+        st.subheader("🔄 Ajustar Refinamento")
+        st.caption("Não ficou como esperava? Adicione contexto extra e refine novamente.")
+
+        extra_context = st.text_area(
+            "Contextualização adicional",
+            height=120,
+            key="refiner_extra_context",
+            placeholder="Ex: 'O prompt precisa lidar também com pedidos em espanhol' ou 'Não remova a seção de few-shots'...",
         )
 
+        if st.button("Re-refinar com contexto →", type="primary", use_container_width=True, key="btn_rerefine"):
+            if not extra_context.strip():
+                st.warning("Escreva alguma contextualização adicional antes de re-refinar.")
+            else:
+                combined_analysis = (
+                    f"{analysis_input}\n\n"
+                    f"[CONTEXTUALIZAÇÃO ADICIONAL DO USUÁRIO]\n{extra_context}"
+                )
+                with st.spinner("Re-refinando prompt..."):
+                    try:
+                        refined, changes = refine_prompt(client, old_prompt, combined_analysis)
+                        st.session_state.refiner_result = refined
+                        st.session_state.refiner_changes = changes
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erro ao re-refinar: {e}")
+
+        st.divider()
         if st.button("Limpar resultado", use_container_width=True, key="btn_clear_refiner"):
             st.session_state.refiner_result = None
+            st.session_state.refiner_changes = None
             st.session_state.refiner_analysis = None
             st.rerun()

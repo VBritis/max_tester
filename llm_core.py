@@ -63,6 +63,7 @@ class ValidationResult(BaseModel):
 
 class PromptRef(BaseModel):
     prompt: str = Field(..., description="Novo prompt refinado e melhorado")
+    changes: str = Field(..., description="Mudanças do antigo para o novo prompt")
 
 # ── Prompts ─────────────────────────────────────────────────────────────────
 
@@ -70,6 +71,7 @@ PROMPT_TESTER_1 = """
 ## Missão e Identificação
 Você é o Max Tester, um Arquiteto de Dados especialista em engenharia reversa de APIs e análise de logs de LLMs.
 Seu objetivo é analisar exemplos de entradas e saídas (payloads) fornecidos pelo usuário e extrair o **molde estrutural exato** ou, em outras palavras, o schema dessas chamadas.
+ 
 
 ## Guia de raciocínio
 Para cada tipo de payload, agent ou tool identificada nos exemplos lidos, você deve mapear as chaves (fields) esperadas seguindo estas regras estritas:
@@ -167,6 +169,12 @@ Para cada nó (campo) dentro do payload que você gerar:
 ## REGRAS DE DISTRIBUIÇÃO E QUANTIDADE:
 - O usuário informará a quantidade de exemplos a serem gerados. Caso seja especificado o número total de exemplos, mas não a distribuição exata entre os tipos de payloads, e existam múltiplos tipos de saída disponíveis na estrutura, **você deve garantir uma distribuição igualmente equilibrada**. Exemplo: se forem pedidos 50 exemplos e houver 5 tipos de saída no Schema, crie exatamente 10 exemplos para cada tipo.
 - O campo `user_input` deve conter variações realistas de como humanos interagem com sistemas (use linguagem direta, linguagem indireta, inclusão de contexto extra, e eventuais vícios de linguagem comuns), garantindo que o `expected_payload` reflita perfeitamente essa intenção.
+
+## REGRAS DE DIRECIONAMENTO:
+- O usuário informará uma contextualização/direcionamento do ambiente e dos dados a serem gerados, respeite estritamente isso.
+- Usuário pode direcionar para gerar dados com gírias, erros de digitação e outros fatores, respeite esses direcionamentos para criar os dados de teste.
+- Usuário pode dar um contexto sobre o ambiente dele, você como engenheiro de QA deve raciocinar sobre esse contexto e gerar os dados de teste mais direcionados a esse ambiente.
+
 
 ## Checklist
 1. Decidiu a distribuição equilibrada ou a informada
@@ -307,9 +315,8 @@ Você receberá dois textos:
 2. **Integração do Feedback:** Resolva TODOS os pontos levantados na [ANÁLISE DE MELHORIA]. Se o feedback diz que o modelo está alucinando variáveis, crie uma restrição explícita contra isso no novo prompt.
 3. **Clareza e Estrutura:** Reescreva trechos confusos. Use formatação em Markdown (cabeçalhos, listas, negrito) para criar uma hierarquia visual clara de instruções. Prompts bons são fáceis de escanear.
 4. **Atualização de Exemplos (Few-Shots):** Se o feedback apontar que os exemplos antigos não cobrem os casos de erro, ajuste os exemplos (few-shots) no corpo do novo prompt para refletir as novas regras.
-5. **Saída Direta:** Seu retorno deve ser EXCLUSIVAMENTE o novo prompt refinado. Não inclua saudações, explicações sobre o que você mudou ou fechamentos. Entregue apenas o artefato pronto para uso.
+5. **Saída Direta:** Seu retorno deve ser EXCLUSIVAMENTE o novo prompt refinado e um resumo das mudanças/alterações feitas no antigo. Não inclua saudações, explicações sobre o que você mudou ou fechamentos. Entregue apenas o artefato pronto para uso.
 
----
 
 
 """
@@ -348,7 +355,7 @@ def extract_schema(client, context, examples):
     return call_llm(client, SchemaResponse, PROMPT_TESTER_1, text)
 
 
-def generate_tests(client, schema_response, count):
+def generate_tests(client, schema_response, count, context):
     """LLM 2: Gera casos de teste com base no schema extraído."""
     text = f"""
 Aqui está a estrutura de payloads que você deve respeitar rigorosamente:
@@ -358,6 +365,9 @@ Aqui está a estrutura de payloads que você deve respeitar rigorosamente:
 
 # Missão
 Gere {count} casos de teste com base nessa estrutura.
+
+# Direcionamento
+Respeite a contextualização/direcionamento dada pelo usuário: {context or 'Nenhum'}
 """
     return call_llm(client, ResponseFormat, PROMPT_TESTER_2, text)
 
@@ -460,4 +470,8 @@ def refine_prompt(client, old_prompt, analysis):
         f"[ANÁLISE DE MELHORIA]\n{analysis}"
     )
     result = call_llm(client, PromptRef, PROMPT_REFINER, text)
-    return result.prompt
+    return result.prompt, result.changes
+
+def padronizer():
+
+    pass
